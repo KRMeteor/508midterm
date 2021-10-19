@@ -17,6 +17,7 @@ library(maptools)
 library(rgdal)
 library(geojsonio)
 library(mapview)
+library(car)
 
 root.dir = "https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/DATA/"
 source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
@@ -255,7 +256,14 @@ reg.cv$resample[1:5,]
 
 #作业
 sd.sf<-st_read("./studentData.geojson")%>%
-  st_set_crs('EPSG:6427')%>%
+  st_set_crs('ESRI:102254')
+
+topredict <-
+  sd.sf%>%
+  filter(toPredict==1)
+
+sd.sf<-
+  sd.sf%>%
   filter(price<10000000)
 #简单柱状图和散点图
 ggplot(sd.sf) + geom_histogram(aes(price))
@@ -273,8 +281,12 @@ ggplot(sd.sf) + geom_point(aes(IntWallDscr,price))
 ggplot(sd.sf) + geom_point(aes(ExtWallPrim,IntWallDscr))
 
 #系数矩阵
-sd.sf.rd<-subset(sd.sf,select=c(-toPredict,-status_cd,-UnitCount,-Stories,-Roof_CoverDscr,
+sd.sf.rd<-subset(sd.sf,select=c(-status_cd,-UnitCount,-Stories,-Roof_CoverDscr,
                       -Roof_Cover,-ExtWallDscrSec,-ExtWallSec,-AcDscr,-Ac))%>%
+  mutate(age=year-builtYear)
+
+topredict<-subset(topredict,select=c(-status_cd,-UnitCount,-Stories,-Roof_CoverDscr,
+                                 -Roof_Cover,-ExtWallDscrSec,-ExtWallSec,-AcDscr,-Ac))%>%
   mutate(age=year-builtYear)
 
 numericVars <- 
@@ -305,9 +317,193 @@ acs_variable_list.2019 <- load_variables(2019, #year
                                          "acs5", #five year ACS estimates
                                          cache = TRUE)
 
+
 tracts19 <- 
   get_acs(geography = "tract", variables = c("B25026_001E","B02001_002E","B15001_050E",
                                              "B15001_009E","B19013_001E","B25058_001E",
-                                             "B06012_002E"), 
+                                             "B06012_002E","B28010_007E","B08101_001E",
+                                             "B09001_001E","B09001_003E","B09021_002E",
+                                             "B11001I_001E", "B14001_009E",
+                                             "B17001_002E","B27001_001E","B18101_001E",
+                                             "B19001_001E","B25001_001E","B25040_001E"), 
           year=2019, state=08, county=013, geometry=T, output="wide") %>%
-  st_transform('EPSG:6427') 
+  st_transform('ESRI:102254') %>%
+  rename(TotalPop = B25026_001E, 
+         Whites = B02001_002E,
+         FemaleBachelors = B15001_050E, 
+         MaleBachelors = B15001_009E,
+         MedHHInc = B19013_001E, 
+         MedRent = B25058_001E,
+         TotalPoverty = B06012_002E,
+         Nocom = B28010_007E, 
+         Waytowork = B08101_001E,
+         Popunder18 = B09001_001E, 
+         Popunder3 = B09001_003E,
+         Singleadult = B09021_002E, 
+         Householdtype = B11001I_001E,
+         Addmittogra = B14001_009E,
+         Poverty  = B17001_002E,
+         Healthins  = B27001_001E,
+         Disable  = B18101_001E,
+         Familyincome  = B19001_001E,
+         Housingunits  = B25001_001E,
+         Househeatingfuel  = B25040_001E)%>%
+  mutate(pctWhite = ifelse(TotalPop > 0, Whites / TotalPop,0),
+         pctBachelors = ifelse(TotalPop > 0, ((FemaleBachelors + MaleBachelors) / TotalPop),0),
+         pctPoverty = ifelse(TotalPop > 0, TotalPoverty / TotalPop, 0),
+         year = "2019") 
+
+
+#数据合并
+boulder<-
+  st_join(sd.sf.rd,tracts19)%>%
+  dplyr::select(price, qualityCode, age, 
+                nbrRoomsNobath, mainfloorSF, TotalFinishedSF,
+                ExtWallDscrPrim, NAME,Nocom,Waytowork,Popunder18,
+                Popunder3,Singleadult,Householdtype,Addmittogra,
+                Poverty,Healthins,Disable,Familyincome,
+                Housingunits,Househeatingfuel,pctWhite,
+                pctBachelors,pctPoverty)
+
+topredict<-
+  st_join(topredict,tracts19)%>%
+  dplyr::select(MUSA_ID, price, qualityCode, age, 
+                nbrRoomsNobath, mainfloorSF, TotalFinishedSF,
+                ExtWallDscrPrim, NAME,Nocom,Waytowork,Popunder18,
+                Popunder3,Singleadult,Householdtype,Addmittogra,
+                Poverty,Healthins,Disable,Familyincome,
+                Housingunits,Househeatingfuel,pctWhite,
+                pctBachelors,pctPoverty)
+
+numericVarsboulder <- 
+  select_if(st_drop_geometry(boulder), is.numeric) %>% na.omit()
+
+cor(numericVarsboulder)
+ggcorrplot(
+  round(cor(numericVarsboulder), 1), 
+  p.mat = cor_pmat(numericVarsboulder),
+  colors = c("#25CB10", "white", "#FA7800"),
+  type="lower",
+  insig = "blank") +  
+  labs(title = "Correlation across numeric variables") 
+
+regboulder <- lm(price ~ ., data = st_drop_geometry(boulder) %>% 
+            dplyr::select(price, qualityCode, age, 
+                          nbrRoomsNobath, mainfloorSF, TotalFinishedSF,
+                          ExtWallDscrPrim, NAME, pctWhite))
+summary(regboulder)
+plot_summs(regboulder)
+effect_plot(regboulder, pred = builtYear, interval = TRUE, plot.points = TRUE)
+
+#偷车数据
+stobike<-st_read("./Stolen_Bikes.geojson")%>%
+  st_set_crs('EPSG:4326')%>%
+  st_transform('ESRI:102254')
+
+stobike.sf <-
+  stobike %>%
+  dplyr::select(geometry) %>%
+  na.omit()
+
+crime.cor <-
+  st_c(stobike.sf)%>%
+  na.omit()
+
+boulder.cor <-
+  st_c(boulder)%>%
+  na.omit()
+
+st_c <- st_coordinates
+boulder <-
+  boulder %>% 
+  mutate(
+    crime_nn1 = nn_function(boulder.cor, crime.cor, 1),
+    crime_nn2 = nn_function(boulder.cor, crime.cor, 2), 
+    crime_nn3 = nn_function(boulder.cor, crime.cor, 3), 
+    crime_nn4 = nn_function(boulder.cor, crime.cor, 4), 
+    crime_nn5 = nn_function(boulder.cor, crime.cor, 5)) 
+
+topredict <-
+  topredict %>% 
+  mutate(crime_nn5 = nn_function(st_c(topredict), crime.cor, 5)) 
+
+regboulder <- lm(price ~ ., data = st_drop_geometry(boulder) %>% 
+                   dplyr::select(price, qualityCode, age, 
+                                 nbrRoomsNobath, mainfloorSF, TotalFinishedSF,
+                                 ExtWallDscrPrim, NAME,pctWhite,
+                                 pctBachelors,pctPoverty,crime_nn5))
+summary(regboulder)
+
+#学校数据
+school<-st_read("./Address_Points.geojson")%>%
+  st_transform(st_crs(boulder))
+
+boulder <-
+  boulder %>% 
+  mutate(
+    school_nn1 = nn_function(boulder.cor, st_c(school), 1),
+    school_nn2 = nn_function(boulder.cor, st_c(school), 2), 
+    school_nn3 = nn_function(boulder.cor, st_c(school), 3), 
+    school_nn4 = nn_function(boulder.cor, st_c(school), 4), 
+    school_nn5 = nn_function(boulder.cor, st_c(school), 5))
+
+topredict <-
+  topredict %>% 
+  mutate(school_nn5 = nn_function(st_c(topredict), st_c(school), 5),
+         logschool_nn5=log(school_nn5))
+
+boulder<-
+  boulder%>%
+  mutate(
+    logprice=log(price),
+    logschool_nn5=log(school_nn5))
+
+regboulder <- lm(logprice ~ ., data = st_drop_geometry(boulder) %>% 
+                   dplyr::select(logprice, qualityCode, age, 
+                                 nbrRoomsNobath, mainfloorSF, TotalFinishedSF,
+                                 ExtWallDscrPrim, NAME,crime_nn5,logschool_nn5))
+summary(regboulder)
+
+#训练集和测试集
+inTrain <- createDataPartition(
+  y= paste(boulder$ExtWallDscrPrim),
+  p = .75, list = FALSE)
+boulder.training <- boulder[inTrain,] 
+boulder.test <- boulder[-inTrain,] 
+
+regtrain <- lm(logprice ~ ., data = st_drop_geometry(boulder.training) %>% 
+                   dplyr::select(logprice, qualityCode, age, 
+                                 nbrRoomsNobath, mainfloorSF, TotalFinishedSF,
+                                 ExtWallDscrPrim, NAME,crime_nn5,logschool_nn5))
+summary(regtrain)
+
+#测试集的MAE和MAPE
+boulder.test <-
+  boulder.test %>%
+  mutate(logprice.Predict = predict(regtrain, boulder.test),
+         price.Predict=exp(logprice.Predict),
+         price.Error = price.Predict - price,
+         price.AbsError = abs(price.Predict - price),
+         price.SSE = (price.Predict - price)^2,
+         price.SST = (price.Predict - mean(boulder.test$price, na.rm = T))^2,
+         price.APE = (abs(price.Predict - price)) / price.Predict)
+#误差绝对值的百分数，MAE
+mean(boulder.test$price.AbsError, na.rm = T)
+#误差绝对值变化率的百分数，MAPE
+mean(boulder.test$price.APE, na.rm = T)
+
+# SSE=sum(boulder.test$price.SSE, na.rm = T)
+# SST=sum(boulder.test$price.SST, na.rm = T)
+# 1-SSE/SST
+
+#模型预测
+
+topredict$logprice <- predict(regtrain, topredict)
+topredict$price=exp(topredict$logprice)
+
+topredictoutput<-
+  topredict%>%
+  dplyr::select(MUSA_ID,price)%>%
+  st_drop_geometry()
+
+write.csv(topredictoutput, file="price.csv", row.names = FALSE)
