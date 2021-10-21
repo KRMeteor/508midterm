@@ -1,0 +1,42 @@
+---
+title: "MUSA-508 midterm: housing price predict in Boulder County, CO"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+#### Group: Moran's eye
+#### Members: Hanpu Yao, Ziyuan Cai
+
+## 1.Introduction
+#### What is the purpose of this project?
+The purpose of this project is to predict sale price of housing in Boulder County in Colorado between 2019 and 2021, using the data of the features of houses sold in the same period. With practical regression model and spatial statistics methods, our model combines many selected features and gives a statistical prediction of housing pr
+gain more insight about the housing market in Boulder County
+
+
+
+#### Why should we care about it? 
+As a essential part of livelihood, housing provides safety, stability, and shelter especially in this unprecedented times. For consumers, they want to know how much it costs to buy a house in our favorite neighborhood and what the best house is that they can afford. For investors, they need to keep tract of the trend of their assets. For developers, knowing the market price helps create developing strategies. For government, housing brings a large amount of tax.
+
+
+#### What makes this a difficult exercise? 
+Houses are not standardized, which means every house is unique in some ways. Just like any other dataset collected in real world, the selection of the indicators in our raw dataset may bring some bias with it. Plus, even though the variables are very thorough and diverse, which ones are related to price and should be added in the model is unkown. As for the time period, in general the housing price is getting expensive in the past years, but the dataset has a narrower scale of time that only contains saleprice from 2019 to 2021. The most influencing factor, COVID-19, would also fluctuate the trend in these 3 years.
+
+#### What is your overall modeling strategy?
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
