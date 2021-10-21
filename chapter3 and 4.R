@@ -558,7 +558,8 @@ ggplot() +
   mapTheme()
 
 #Moran's I和lag图
-boulder.test.cor <- boulder.test %>%
+boulder.test.cor <- 
+  boulder.test %>%
   st_coordinates()
 
 neighborList.test <- knn2nb(knearneigh(boulder.test.cor, 5))
@@ -612,26 +613,33 @@ ggplot() +
 
 #MAPE by neighborhood的图
 
-boulder.test.neighbor <- boulder.test %>% 
-  group_by(nhood) %>% 
-  summarize(SalePrice = mean(SalePrice),
-            MAPE = mean(SalePrice.APE)) 
-
-sales.test_predict_neighb_MAPE <- dataHere %>% st_join(sales.test_predict_neighb_MAPE) %>% 
-  filter(!is.na(MAPE))
+boulder.test.neighbor <- 
+  boulder.test %>% 
+  group_by(NAME) %>% 
+  summarize(price = mean(price),
+            MAPE = mean(price.APE)) %>%
+  st_set_geometry(NULL) %>%
+  left_join(tracts19) %>%
+  st_sf()
 
 ggplot() +
-  geom_sf(data = neighbs, fill = "grey40") +
-  geom_sf(data = sales.test_predict_neighb_MAPE %>% 
-            filter(!is.na(MAPE)), aes(fill = q5(MAPE)), size = 1) +
+  geom_sf(data = tracts19) +
+  geom_sf(data = boulder.test.neighbor, aes(fill = q5(MAPE)), size = 1) +
   scale_fill_manual(values = palette5,
-                    labels = qBr(sales.test_predict_neighb_MAPE %>% 
-                                   filter(!is.na(MAPE)) %>% 
-                                   mutate(MAPE = MAPE * 100), "MAPE", rnd = FALSE),
+                    labels = qBr(boulder.test.neighbor, "MAPE", rnd = FALSE),
                     name = "Quintile\nBreaks") +
-  labs(title = "MAPE by Neighborhood for Test Set",
-       subtitle = "NA neighborhoods were not included in test set due to small sample size.") +
+  labs(title = "MAPE by Neighborhood for Test Set") +
   mapTheme()
+
+#MAPE by neighborhood 和mean price by neighborhood的散点图
+ggplot(boulder.test.neighbor, aes(MAPE, price)) +
+  geom_point(size = 2, colour = "black") +
+  stat_smooth(data=boulder.test.neighbor, aes(MAPE, price),
+              method = "lm", se = FALSE, size = 1, colour="#FA7800") +
+  labs(title="MAPE by neighborhood as a function of mean price by neighborhood") +
+  plotTheme()
+
+#
 
 #模型预测
 
