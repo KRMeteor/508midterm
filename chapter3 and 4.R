@@ -544,7 +544,7 @@ ggplot(boulder.test, aes(price.Predict, price)) +
   stat_smooth(data=boulder.test, aes(price, price.Predict),
               method = "lm", se = FALSE, size = 1, colour="#25CB10") +
   labs(title="Predicted sale price as a function of observed price",
-       subtitle="Orange line represents a perfect prediction; Pink line represents prediction") +
+       subtitle="Orange line represents a perfect prediction; Grean line represents prediction") +
   plotTheme()
 
 #测试集残差图
@@ -623,7 +623,7 @@ boulder.test.neighbor <-
   st_sf()
 
 ggplot() +
-  geom_sf(data = tracts19) +
+  geom_sf(data = tracts19, fill = "grey80") +
   geom_sf(data = boulder.test.neighbor, aes(fill = q5(MAPE)), size = 1) +
   scale_fill_manual(values = palette5,
                     labels = qBr(boulder.test.neighbor, "MAPE", rnd = FALSE),
@@ -639,7 +639,32 @@ ggplot(boulder.test.neighbor, aes(MAPE, price)) +
   labs(title="MAPE by neighborhood as a function of mean price by neighborhood") +
   plotTheme()
 
-#
+#imcome分为High income 和low income 来检测模型的generalizability
+tracts19income <- 
+  get_acs(geography = "tract", variables = c("B06011_001E"), 
+          year=2019, state=08, county=013, geometry=T, output="wide") %>%
+  st_transform('ESRI:102254') %>%
+  rename(Median_Income = B06011_001E) %>%
+  mutate(incomeContext = ifelse(Median_Income > 40000, "High Income", "Low Income"))
+
+ggplot() + 
+  geom_sf(data = tracts19income, aes(fill = incomeContext)) +
+  scale_fill_manual(values = c("#ef8a62", "#67a9cf"), name="Income Context") +
+  labs(title = "Income Context") +
+  mapTheme() + 
+  theme(legend.position="bottom") 
+
+boulder.test.income <-
+  st_join(boulder.test, tracts19income) %>% 
+    group_by(incomeContext) %>%
+    summarize(MAE = mean(price.AbsError),
+              MAPE = mean(price.APE)) %>%
+    st_drop_geometry()
+
+kable(boulder.test.income, caption = "Errors for test set sale price predictions by income contexts") %>%
+  kable_styling("striped", full_width = F, position = "left") %>%
+  row_spec(1, color = "black", background = "#ef8a62") %>%
+  row_spec(2, color = "black", background = "#67a9cf")
 
 #模型预测
 
