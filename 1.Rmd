@@ -1,15 +1,41 @@
 ---
 title: "MUSA-508 midterm: housing price predict in Boulder County, CO"
-output: html_document
+output: 
+  html_document:
+    toc: TRUE
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning = FALSE, message = FALSE)
 ```
 
 
 #### Group: Moran's eye
 #### Members: Hanpu Yao, Ziyuan Cai
+
+```{r,message=FALSE,echo=FALSE}
+library(tidyverse)
+library(tidycensus)
+library(sf)
+library(spdep)
+library(caret)
+library(ckanr)
+library(FNN)
+library(grid)
+library(gridExtra)
+library(ggcorrplot)
+library(jtools)
+library(ggstance)
+library(kableExtra)
+library(broom.mixed)
+library(sp)
+library(maptools)
+library(rgdal)
+library(geojsonio)
+library(car)
+library(stargazer)
+library(gtsummary)
+```
 
 ## 1.Introduction
 #### What is the purpose of this project?
@@ -25,18 +51,432 @@ As a essential part of livelihood, housing provides safety, stability, and shelt
 #### What makes this a difficult exercise? 
 Houses are not standardized, which means every house is unique in some ways. Just like any other dataset collected in real world, the selection of the indicators in our raw dataset may bring some bias with it. Plus, even though the variables are very thorough and diverse, which ones are related to price and should be added in the model is unkown. As for the time period, in general the housing price is getting expensive in the past years, but the dataset has a narrower scale of time that only contains saleprice from 2019 to 2021. The most influencing factor, COVID-19, would also fluctuate the trend in these 3 years.
 
+
+
+
 #### What is your overall modeling strategy?
-```{r cars}
-summary(cars)
+
+## 2.Data
+```{r}
+sd.sf<-st_read("./studentData.geojson")%>%
+  st_set_crs('ESRI:102254')
+
+topredict <-
+  sd.sf%>%
+  filter(toPredict==1)
+
+sd.sf<-
+  sd.sf%>%
+  filter(price<10000000)
+
+sd.sf.rd<-subset(sd.sf,select=c(-status_cd,-UnitCount,-Stories,-Roof_CoverDscr,
+                      -Roof_Cover,-ExtWallDscrSec,-ExtWallSec,-AcDscr,-Ac))%>%
+  mutate(age=year-builtYear)
+
+topredict<-subset(topredict,select=c(-status_cd,-UnitCount,-Stories,-Roof_CoverDscr,
+                                 -Roof_Cover,-ExtWallDscrSec,-ExtWallSec,-AcDscr,-Ac))%>%
+  mutate(age=year-builtYear)
+
+
+census_api_key("f75c994cf9151eecca2d2f379ec6962793e32828", overwrite = TRUE)
+
+acs_variable_list.2019 <- load_variables(2019, #year
+                                         "acs5", #five year ACS estimates
+                                         cache = TRUE)
+
+
+tracts19 <- 
+  get_acs(geography = "tract", variables = c("B25026_001E","B02001_002E","B15001_050E",
+                                             "B15001_009E","B19013_001E","B25058_001E",
+                                             "B06012_002E","B28010_007E","B08101_001E",
+                                             "B09001_001E","B09001_003E","B09021_002E",
+                                             "B11001I_001E", "B14001_009E",
+                                             "B17001_002E","B27001_001E","B18101_001E",
+                                             "B19001_001E","B25001_001E","B25040_001E"), 
+          year=2019, state=08, county=013, geometry=T, output="wide") %>%
+  st_transform('ESRI:102254') %>%
+  rename(TotalPop = B25026_001E, 
+         Whites = B02001_002E,
+         FemaleBachelors = B15001_050E, 
+         MaleBachelors = B15001_009E,
+         MedHHInc = B19013_001E, 
+         MedRent = B25058_001E,
+         TotalPoverty = B06012_002E,
+         Nocom = B28010_007E, 
+         Waytowork = B08101_001E,
+         Popunder18 = B09001_001E, 
+         Popunder3 = B09001_003E,
+         Singleadult = B09021_002E, 
+         Householdtype = B11001I_001E,
+         Addmittogra = B14001_009E,
+         Poverty  = B17001_002E,
+         Healthins  = B27001_001E,
+         Disable  = B18101_001E,
+         Familyincome  = B19001_001E,
+         Housingunits  = B25001_001E,
+         Househeatingfuel  = B25040_001E)%>%
+  mutate(pctWhite = ifelse(TotalPop > 0, Whites / TotalPop,0),
+         pctBachelors = ifelse(TotalPop > 0, ((FemaleBachelors + MaleBachelors) / TotalPop),0),
+         pctPoverty = ifelse(TotalPop > 0, TotalPoverty / TotalPop, 0),
+         year = "2019") 
+
+# Join the data
+boulder<-
+  st_join(sd.sf.rd,tracts19)%>%
+  dplyr::select(price, qualityCode, age, 
+                nbrRoomsNobath, mainfloorSF, TotalFinishedSF,
+                ExtWallDscrPrim, NAME,Nocom,Waytowork,Popunder18,
+                Popunder3,Singleadult,Householdtype,Addmittogra,
+                Poverty,Healthins,Disable,Familyincome,
+                Housingunits,Househeatingfuel,pctWhite,
+                pctBachelors,pctPoverty)
+
+topredict<-subset(topredict,select=c(-status_cd,-UnitCount,-Stories,-Roof_CoverDscr,
+                                 -Roof_Cover,-ExtWallDscrSec,-ExtWallSec,-AcDscr,-Ac))%>%
+  mutate(age=year-builtYear)
+
+numericVars <- 
+  select_if(st_drop_geometry(sd.sf.rd), is.numeric) %>% na.omit()
+
+boulder.data <-
+  boulder %>%
+  dplyr::select(price, logprice, qualityCode, age, 
+                nbrRoomsNobath, mainfloorSF, TotalFinishedSF,
+                ExtWallDscrPrim, NAME,crime_nn5,school_nn5, logschool_nn5)
+
+boulder.data.clear <-
+  boulder.data %>%
+  dplyr::select_if(is.numeric)%>%
+  st_set_geometry(NULL)
+
+boulder.data.clear <- 
+  boulder.data.clear%>%
+  rename(price_dependent_variable = price,
+         logprice_dependent_varialble = logprice,
+         qualityCode_internal_characteristics = qualityCode,
+         age_internal_characteristics = age,
+         nbrRoomsNobath_internal_characteristics = nbrRoomsNobath,
+         mainfloorSF_internal_characteristics = mainfloorSF,
+         TotalFinishedSF_internal_characteristics = TotalFinishedSF,
+         crime_nn5_spatial_structure = crime_nn5,
+         school_nn5_spatial_structure = school_nn5,
+         logschool_nn5_spatial_structure = logschool_nn5)
+
+stargazer(boulder.data.clear, type='text',title='Summary Statistics')
 ```
 
-## Including Plots
+#### Methods for gathering data
+We searched for some open data in Boulder, and decided to used stolen bikes data and school location data.
+#### Variable descriptions
+```{r}
 
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+# 附上表格
+#### Plots
+*correlation matrix*
+```{r}
+ggcorrplot(
+  round(cor(numericVars), 1), 
+  p.mat = cor_pmat(numericVars),
+  colors = c("#25CB10", "white", "#FA7800"),
+  type="lower",
+  insig = "blank") +  
+  labs(title = "Correlation across numeric variables") 
+```
+
+ 4 home price correlation scatterplots
+```{r}
+boulder.data.scatter <-
+  boulder.data %>% 
+  dplyr::select_if(negate(is.factor)) %>% 
+  dplyr::select_if(negate(is.character)) %>% 
+  dplyr::select(price, qualityCode, age, nbrRoomsNobath, mainfloorSF)
+
+boulder.data.scatter %>%
+  as.data.frame() %>% 
+  dplyr::select(-geometry) %>%
+  gather(Variable, Value, -price) %>% 
+  ggplot(aes(x = Value, 
+             y = price)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = F, colour = "#FA7800") +
+  facet_wrap(~Variable, ncol = 2, scales = "free") +
+  labs(title = "Price as a function of continuous variables") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  plotTheme() + 
+  scale_y_continuous()
+```
+
+ 
+ 1 map of your dependent variable
+```{r}
+ggplot() +
+  geom_sf(data = tracts19, fill = "grey80") +
+  geom_sf(data = boulder.data, aes(colour = q5(price)), show.legend = "point", size = .75) +
+  scale_colour_manual(values = palette5,
+                      labels = qBr(boulder.data, "price"),
+                      name = "Quintile\nBreaks") +
+  labs(title = "Sale Price") +
+  mapTheme()
+```
+ 
+ 3 maps of 3 of your most interesting independent variables
+```{r}
+h1 <- 
+  ggplot() +
+    geom_sf(data = tracts19, fill = "grey80") +
+    geom_sf(data = boulder.data, aes(colour = q5(age)), show.legend = "point", size = .75) +
+    scale_colour_manual(values = palette5,
+                        labels = qBr(boulder.data, "age"),
+                        name = "Quintile\nBreaks") +
+    labs(title = "Age") +
+    mapTheme()
+h2 <- ggplot() +
+  geom_sf(data = tracts19, fill = "grey80") +
+  geom_sf(data = boulder.data, aes(colour = q5(qualityCode)), show.legend = "point", size = .75) +
+  scale_colour_manual(values = palette5,
+                      labels = qBr(boulder.data, "qualityCode"),
+                      name = "Quintile\nBreaks") +
+  labs(title = "Quality Code") +
+  mapTheme()
+h3 <- ggplot() +
+  geom_sf(data = tracts19, fill = "grey80") +
+  geom_sf(data = boulder.data, aes(colour = q5(mainfloorSF)), show.legend = "point", size = .75) +
+  scale_colour_manual(values = palette5,
+                      labels = qBr(boulder.data, "mainfloorSF"),
+                      name = "Quintile\nBreaks") +
+  labs(title = "Total finished square footage of the main floor") +
+  mapTheme()
+plot_grid(h1,h2,h3)
+```
+ 
+ 
+## 3.Method
+
+Our core method to predict the housing price in Boulder County is multiple linear regression model, which is based on ordinary least squares (OLS) to estimate the relation between our dependent variable (housing price) and independent variables (housing characters shown in the data section).
+
+Three to process the project:
+
+  1. Data gathering, cleaning and normalizing. 
+  - Some variable in the raw data is not suitable for model training, since some problems would hurt the accuracy of the model, such as skewness and outliers. This process prepares the data to train a model.
+      
+  2. Variables selecting and model building.
+  - Variables selecting
+      Not all variables have significant statistical relationship with housing price, and different combinations of independent variables also influence the model performance. 
+  - Model building
+      We randomly split the data into two part: 75% as a training set and 25% as a test set. Then we used the training set to regress housing price on the predictors to construct the model.
+    
+  3. Model assessment and validation
+  + We measured accuracy of the model by its R^2, which is is the proportion of the variation in the dependent variable that is predictable from the independent variables. The higher R^2 represents the better the estimated values fit in the observed values. relatively high R^2.
+    + We also checked the MAE (Mean Square Error) and MAPE (Mean Absolute Percentage Error), which are the measures of errors in the model. The more MAE and MAPE are closed to 0, the better the model predicts.
+    + For the generalizability, we use Moran's I and spatial lag to analyse spatial auto correlation.
+    + Then we rolled back to step 2, adjusted our included variables and compared these indicators each time. This process was repeated until we had a relatively fitted model.
+  
+## 4.Results
+
+Split the ‘toPredict’ == 0 into a separate training and test set using a 75/25 split. The table below is the result.
+```{r}
+inTrain <- createDataPartition(
+  y= paste(boulder$ExtWallDscrPrim),
+  p = .75, list = FALSE)
+boulder.training <- boulder[inTrain,] 
+boulder.test <- boulder[-inTrain,] 
+
+regtrain <- lm(logprice ~ ., data = st_drop_geometry(boulder.training) %>% 
+                   dplyr::select(logprice, qualityCode, age, 
+                                 nbrRoomsNobath, mainfloorSF, TotalFinishedSF,
+                                 ExtWallDscrPrim, NAME,crime_nn5,logschool_nn5))
+stargazer(regtrain,type="text",title = "Regression")
+```
+
+The table and histogram of MAE and MAPE:
+```{r}
+boulder.test <-
+  boulder.test %>%
+  mutate(logprice.Predict = predict(regtrain, boulder.test),
+         price.Predict=exp(logprice.Predict),
+         price.Error = price.Predict - price,
+         price.AbsError = abs(price.Predict - price),
+         price.SSE = (price.Predict - price)^2,
+         price.SST = (price.Predict - mean(boulder.test$price, na.rm = T))^2,
+         price.APE = (abs(price.Predict - price)) / price.Predict)
+
+testset <- data.frame(MAE = mean(boulder.test$price.AbsError, na.rm = T),
+                      MAPE = mean(boulder.test$price.APE, na.rm = T))
+
+kable(testset, 
+      col.names = c("MAE", "MAPE"),
+      caption = "Mean absolute error and MAPE for test set") %>% 
+  kable_styling(full_width = F)
+```
+
+```{r}
+
+fitControl <- trainControl(method = "cv", number = 100)
+set.seed(825)
+
+reg.cv <- 
+  train(logprice ~ ., data = st_drop_geometry(boulder) %>% 
+          dplyr::select(logprice, qualityCode, age, 
+                        nbrRoomsNobath, mainfloorSF, TotalFinishedSF,
+                        ExtWallDscrPrim, NAME,crime_nn5,logschool_nn5), 
+        method = "lm", trControl = fitControl, na.action = na.pass)
+
+kfold <- data.frame(mean_MAE = mean(reg.cv[["resample"]][["MAE"]]),
+                    sd_MAE = sd(reg.cv[["resample"]][["MAE"]]))
+
+kable(kfold, 
+      col.names = c("Average MAE", "Std Deviation of MAE"),
+      caption = "100-fold Cross-Validation Results") %>% 
+  kable_styling(full_width = F)
+
+ggplot(as.data.frame(reg.cv$resample), aes(MAE)) + 
+  geom_histogram(bins = 50, colour="white", fill = "#FFD365") +
+  geom_vline(aes(xintercept = mean(MAE)), color = "blue", size = 1) + 
+  labs(title="Distribution of MAE", subtitle = "k-fold cross validation; k = 100",
+       x="Mean Absolute Error", y="Count") +
+  plotTheme()
+```
+Plot predicted prices as a function of observed prices
+```{r}
+ggplot(boulder.test, aes(price.Predict, price)) +
+  geom_point(size = 0.75, colour = "black") +
+  stat_smooth(data=boulder.test, aes(price, price),
+              method = "lm", se = FALSE, size = 1, colour="#FA7800") +
+  stat_smooth(data=boulder.test, aes(price, price.Predict),
+              method = "lm", se = FALSE, size = 1, colour="#25CB10") +
+  labs(title="Predicted sale price as a function of observed price",
+       subtitle="Orange line represents a perfect prediction; Grean line represents prediction") +
+  plotTheme()
+
+```
+
+A map of the residual of the test set
+```{r}
+ggplot() +
+  geom_sf(data = tracts19, fill = "grey80") +
+  geom_sf(data = boulder.test, aes(colour = q5(price.Error)), show.legend = "point", size = 1) +
+  scale_colour_manual(values = palette5,
+                      labels = qBr(boulder.test, "price.Error"),
+                      name = "Quintile\nBreaks") +
+  labs(title = "Sale price errors for test set") +
+  mapTheme()
+```
+
+Moran's I and spatial lag in error
+
+```{r}
+boulder.test.cor <- 
+  boulder.test %>%
+  st_coordinates()
+
+neighborList.test <- knn2nb(knearneigh(boulder.test.cor, 5))
+
+spatialWeights.test <- nb2listw(neighborList.test, style="W")
+
+boulder.test$lagPriceError <- lag.listw(spatialWeights.test, boulder.test$price.Error)
+
+moranTest <- moran.mc(boulder.test$price.Error, 
+                      spatialWeights.test , nsim = 999)
+
+ggplot(as.data.frame(moranTest$res[c(1:999)]), aes(moranTest$res[c(1:999)])) +
+  geom_histogram(binwidth = 0.01) +
+  geom_vline(aes(xintercept = moranTest$statistic), colour = "#FA7800",size=1) +
+  scale_x_continuous(limits = c(-1, 1)) +
+  labs(title="Observed and permuted Moran's I",
+       subtitle= "Observed Moran's I in red",
+       x="Moran's I",
+       y="Count") +
+  plotTheme()
+
+moranTesttable <- data.frame(Statistics = moranTest[["statistic"]][["statistic"]],
+                    Pvalue = moranTest[["p.value"]])
+
+kable(moranTesttable, 
+      col.names = c("Moran's I Statistics", "P Value"),
+      caption = "Moran's I") %>% 
+  kable_styling(full_width = F)
+
+ggplot(boulder.test, aes(lagPriceError, price.Error)) +
+  geom_point(size = 0.75, colour = "black") +
+  stat_smooth(data=boulder.test, aes(lagPriceError, price.Error),
+              method = "lm", se = FALSE, size = 1, colour="#FA7800") +
+  labs(title="Lag error of price as a function of error of price") +
+  plotTheme()
+```
+```{r}
+boulder <-
+  boulder %>%
+  mutate(logprice.Predict = predict(regtrain, boulder),
+         price.Predict=exp(logprice.Predict))
+
+ggplot() +
+  geom_sf(data = tracts19, fill = "grey80") +
+  geom_sf(data = boulder, aes(colour = q5(price.Predict)), show.legend = "point", size = .75) +
+  scale_colour_manual(values = palette5,
+                      labels = qBr(boulder, "price.Predict"),
+                      name = "Quintile\nBreaks") +
+  labs(title = "Predicted sale price for all data") +
+  mapTheme()
+
+```
+
+```{r}
+boulder.test.neighbor <- 
+  boulder.test %>% 
+  group_by(NAME) %>% 
+  summarize(price = mean(price),
+            MAPE = mean(price.APE)) %>%
+  st_set_geometry(NULL) %>%
+  left_join(tracts19) %>%
+  st_sf()
+
+ggplot() +
+  geom_sf(data = tracts19, fill = "grey80") +
+  geom_sf(data = boulder.test.neighbor, aes(fill = q5(MAPE)), size = 1) +
+  scale_fill_manual(values = palette5,
+                    labels = qBr(boulder.test.neighbor, "MAPE", rnd = FALSE),
+                    name = "Quintile\nBreaks") +
+  labs(title = "MAPE by Neighborhood for Test Set") +
+  mapTheme()
+```
+
+```{r}
+ggplot(boulder.test.neighbor, aes(MAPE, price)) +
+  geom_point(size = 2, colour = "black") +
+  stat_smooth(data=boulder.test.neighbor, aes(MAPE, price),
+              method = "lm", se = FALSE, size = 1, colour="#FA7800") +
+  labs(title="MAPE by neighborhood as a function of mean price by neighborhood") +
+  plotTheme()
+```
+
+```{r}
+tracts19income <- 
+  get_acs(geography = "tract", variables = c("B06011_001E"), 
+          year=2019, state=08, county=013, geometry=T, output="wide") %>%
+  st_transform('ESRI:102254') %>%
+  rename(Median_Income = B06011_001E) %>%
+  mutate(incomeContext = ifelse(Median_Income > 40000, "High Income", "Low Income"))
+
+ggplot() + 
+  geom_sf(data = tracts19income, aes(fill = incomeContext)) +
+  scale_fill_manual(values = c("#ef8a62", "#67a9cf"), name="Income Context") +
+  labs(title = "Income Context") +
+  mapTheme() + 
+  theme(legend.position="bottom") 
+
+boulder.test.income <-
+  st_join(boulder.test, tracts19income) %>% 
+    group_by(incomeContext) %>%
+    summarize(MAE = mean(price.AbsError),
+              MAPE = mean(price.APE)) %>%
+    st_drop_geometry()
+
+kable(boulder.test.income, caption = "Errors for test set sale price predictions by income contexts") %>%
+  kable_styling("striped", full_width = F, position = "left") %>%
+  row_spec(1, color = "black", background = "#ef8a62") %>%
+  row_spec(2, color = "black", background = "#67a9cf")
+
+```
 
