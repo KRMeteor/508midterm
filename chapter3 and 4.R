@@ -7,6 +7,7 @@ library(ckanr)
 library(FNN)
 library(grid)
 library(gridExtra)
+library(cowplot)
 library(ggcorrplot)
 library(jtools)
 library(ggstance)
@@ -465,6 +466,125 @@ regboulder <- lm(logprice ~ ., data = st_drop_geometry(boulder) %>%
                                  ExtWallDscrPrim, NAME,crime_nn5,logschool_nn5))
 summary(regboulder)
 
+#变量整理表
+boulder.data <-
+  boulder %>%
+  dplyr::select(price, logprice, qualityCode, age, 
+                nbrRoomsNobath, mainfloorSF, TotalFinishedSF,
+                ExtWallDscrPrim, NAME,crime_nn5,school_nn5, logschool_nn5)
+
+boulder.data.clear <-
+  boulder.data %>%
+  dplyr::select_if(is.numeric)%>%
+  st_set_geometry(NULL)
+
+boulder.data.clear <- 
+  boulder.data.clear%>%
+  rename(price_dependent_variable = price,
+         logprice_dependent_varialble = logprice,
+         qualityCode_internal_characteristics = qualityCode,
+         age_internal_characteristics = age,
+         nbrRoomsNobath_internal_characteristics = nbrRoomsNobath,
+         mainfloorSF_internal_characteristics = mainfloorSF,
+         TotalFinishedSF_internal_characteristics = TotalFinishedSF,
+         crime_nn5_spatial_structure = crime_nn5,
+         school_nn5_spatial_structure = school_nn5,
+         logschool_nn5_spatial_structure = logschool_nn5)
+
+stargazer(boulder.data.clear, type='text',title='Summary Statistics')
+
+#系数矩阵
+numericVars <- 
+  select_if(st_drop_geometry(boulder.data), is.numeric) %>% na.omit()
+
+cor(numericVars)
+ggcorrplot(
+  round(cor(numericVars), 1), 
+  p.mat = cor_pmat(numericVars),
+  colors = c("#25CB10", "white", "#FA7800"),
+  type="lower",
+  insig = "blank") +  
+  labs(title = "Correlation across numeric variables")
+
+#四个price相关的散点图
+boulder.data.scatter <-
+  boulder.data %>% 
+  dplyr::select_if(negate(is.factor)) %>% 
+  dplyr::select_if(negate(is.character)) %>% 
+  dplyr::select(price, qualityCode, age, nbrRoomsNobath, mainfloorSF)
+
+boulder.data.scatter %>%
+  as.data.frame() %>% 
+  dplyr::select(-geometry) %>%
+  gather(Variable, Value, -price) %>% 
+  ggplot(aes(x = Value, 
+             y = price)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = F, colour = "#FA7800") +
+  facet_wrap(~Variable, ncol = 2, scales = "free") +
+  labs(title = "Price as a function of continuous variables") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  plotTheme() + 
+  scale_y_continuous()
+
+#price的图
+ggplot() +
+  geom_sf(data = tracts19, fill = "grey80") +
+  geom_sf(data = boulder.data, aes(colour = q5(price)), show.legend = "point", size = .75) +
+  scale_colour_manual(values = palette5,
+                      labels = qBr(boulder.data, "price"),
+                      name = "Quintile\nBreaks") +
+  labs(title = "Sale Price") +
+  mapTheme()
+
+#3个自变量的图
+h1 <- 
+  ggplot() +
+    geom_sf(data = tracts19, fill = "grey80") +
+    geom_sf(data = boulder.data, aes(colour = q5(age)), show.legend = "point", size = .75) +
+    scale_colour_manual(values = palette5,
+                        labels = qBr(boulder.data, "age"),
+                        name = "Quintile\nBreaks") +
+    labs(title = "Age") +
+    mapTheme()
+h2 <- ggplot() +
+  geom_sf(data = tracts19, fill = "grey80") +
+  geom_sf(data = boulder.data, aes(colour = q5(qualityCode)), show.legend = "point", size = .75) +
+  scale_colour_manual(values = palette5,
+                      labels = qBr(boulder.data, "qualityCode"),
+                      name = "Quintile\nBreaks") +
+  labs(title = "Quality Code") +
+  mapTheme()
+h3 <- ggplot() +
+  geom_sf(data = tracts19, fill = "grey80") +
+  geom_sf(data = boulder.data, aes(colour = q5(mainfloorSF)), show.legend = "point", size = .75) +
+  scale_colour_manual(values = palette5,
+                      labels = qBr(boulder.data, "mainfloorSF"),
+                      name = "Quintile\nBreaks") +
+  labs(title = "Total finished square footage of the main floor") +
+  mapTheme()
+plot_grid(h1,h2,h3)
+
+#any map that interest
+h4 <- 
+  ggplot() +
+  geom_sf(data = tracts19, fill = "grey80") +
+  geom_sf(data = boulder.data, aes(colour = q5(crime_nn5)), show.legend = "point", size = .75) +
+  scale_colour_manual(values = palette5,
+                      labels = qBr(boulder.data, "crime_nn5"),
+                      name = "Quintile\nBreaks") +
+  labs(title = "Average distance of 5 Bike-stolen") +
+  mapTheme()
+h5 <- ggplot() +
+  geom_sf(data = tracts19, fill = "grey80") +
+  geom_sf(data = boulder.data, aes(colour = q5(school_nn5)), show.legend = "point", size = .75) +
+  scale_colour_manual(values = palette5,
+                      labels = qBr(boulder.data, "school_nn5"),
+                      name = "Quintile\nBreaks") +
+  labs(title = "Average distance of 5 schools") +
+  mapTheme()
+plot_grid(h4, h5)
+
 #训练集和测试集
 inTrain <- createDataPartition(
   y= paste(boulder$ExtWallDscrPrim),
@@ -479,9 +599,7 @@ regtrain <- lm(logprice ~ ., data = st_drop_geometry(boulder.training) %>%
 summary(regtrain)
 
 #把结果用干净的表格展示出来
-stargazer(regtrain, header = FALSE, type = "text", notes.append = FALSE, 
-          notes = c("<sup>&sstarf;</sup>p<0.1; <sup>&sstarf;&sstarf;</sup>p<0.05; <sup>&sstarf;&sstarf;&sstarf;</sup>p<0.01"),
-          dep.var.labels   = "log price")
+stargazer(regtrain,type="text",title = "Regression")
 
 #测试集的MAE和MAPE
 boulder.test <-
