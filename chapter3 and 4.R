@@ -18,6 +18,7 @@ library(rgdal)
 library(geojsonio)
 library(mapview)
 library(car)
+library(stargazer)
 
 root.dir = "https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/DATA/"
 source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
@@ -477,6 +478,11 @@ regtrain <- lm(logprice ~ ., data = st_drop_geometry(boulder.training) %>%
                                  ExtWallDscrPrim, NAME,crime_nn5,logschool_nn5))
 summary(regtrain)
 
+#把结果用干净的表格展示出来
+stargazer(regtrain, header = FALSE, type = "text", notes.append = FALSE, 
+          notes = c("<sup>&sstarf;</sup>p<0.1; <sup>&sstarf;&sstarf;</sup>p<0.05; <sup>&sstarf;&sstarf;&sstarf;</sup>p<0.01"),
+          dep.var.labels   = "log price")
+
 #测试集的MAE和MAPE
 boulder.test <-
   boulder.test %>%
@@ -492,9 +498,173 @@ mean(boulder.test$price.AbsError, na.rm = T)
 #误差绝对值变化率的百分数，MAPE
 mean(boulder.test$price.APE, na.rm = T)
 
-# SSE=sum(boulder.test$price.SSE, na.rm = T)
-# SST=sum(boulder.test$price.SST, na.rm = T)
-# 1-SSE/SST
+testset <- data.frame(MAE = mean(boulder.test$price.AbsError, na.rm = T),
+                      MAPE = mean(boulder.test$price.APE, na.rm = T))
+
+kable(testset, 
+      col.names = c("MAE", "MAPE"),
+      caption = "Mean absolute error and MAPE for test set") %>% 
+  kable_styling(full_width = F)
+
+#kfold
+fitControl <- trainControl(method = "cv", number = 100)
+set.seed(825)
+
+reg.cv <- 
+  train(logprice ~ ., data = st_drop_geometry(boulder) %>% 
+          dplyr::select(logprice, qualityCode, age, 
+                        nbrRoomsNobath, mainfloorSF, TotalFinishedSF,
+                        ExtWallDscrPrim, NAME,crime_nn5,logschool_nn5), 
+        method = "lm", trControl = fitControl, na.action = na.pass)
+
+reg.cv
+
+reg.cv$resample[1:100,]
+
+kfold <- data.frame(mean_MAE = mean(reg.cv[["resample"]][["MAE"]]),
+                    sd_MAE = sd(reg.cv[["resample"]][["MAE"]]))
+
+kable(kfold, 
+      col.names = c("Average MAE", "Std Deviation of MAE"),
+      caption = "100-fold Cross-Validation Results") %>% 
+  kable_styling(full_width = F)
+
+ggplot(as.data.frame(reg.cv$resample), aes(MAE)) + 
+  geom_histogram(bins = 50, colour="white", fill = "#FFD365") +
+  geom_vline(aes(xintercept = mean(MAE)), color = "blue", size = 1) + 
+  labs(title="Distribution of MAE", subtitle = "k-fold cross validation; k = 100",
+       x="Mean Absolute Error", y="Count") +
+  plotTheme()
+
+#预测值和真实值的相关图
+ggplot(boulder.test, aes(price.Predict, price)) +
+  geom_point(size = 0.75, colour = "black") +
+  stat_smooth(data=boulder.test, aes(price, price),
+              method = "lm", se = FALSE, size = 1, colour="#FA7800") +
+  stat_smooth(data=boulder.test, aes(price, price.Predict),
+              method = "lm", se = FALSE, size = 1, colour="#25CB10") +
+  labs(title="Predicted sale price as a function of observed price",
+       subtitle="Orange line represents a perfect prediction; Grean line represents prediction") +
+  plotTheme()
+
+#测试集残差图
+ggplot() +
+  geom_sf(data = tracts19, fill = "grey80") +
+  geom_sf(data = boulder.test, aes(colour = q5(price.Error)), show.legend = "point", size = 1) +
+  scale_colour_manual(values = palette5,
+                      labels = qBr(boulder.test, "price.Error"),
+                      name = "Quintile\nBreaks") +
+  labs(title = "Sale price errors for test set") +
+  mapTheme()
+
+#Moran's I和lag图
+boulder.test.cor <- 
+  boulder.test %>%
+  st_coordinates()
+
+neighborList.test <- knn2nb(knearneigh(boulder.test.cor, 5))
+
+spatialWeights.test <- nb2listw(neighborList.test, style="W")
+
+boulder.test$lagPriceError <- lag.listw(spatialWeights.test, boulder.test$price.Error)
+
+moranTest <- moran.mc(boulder.test$price.Error, 
+                      spatialWeights.test , nsim = 999)
+
+ggplot(as.data.frame(moranTest$res[c(1:999)]), aes(moranTest$res[c(1:999)])) +
+  geom_histogram(binwidth = 0.01) +
+  geom_vline(aes(xintercept = moranTest$statistic), colour = "#FA7800",size=1) +
+  scale_x_continuous(limits = c(-1, 1)) +
+  labs(title="Observed and permuted Moran's I",
+       subtitle= "Observed Moran's I in red",
+       x="Moran's I",
+       y="Count") +
+  plotTheme()
+
+moranTesttable <- data.frame(Statistics = moranTest[["statistic"]][["statistic"]],
+                    Pvalue = moranTest[["p.value"]])
+
+kable(moranTesttable, 
+      col.names = c("Moran's I Statistics", "P Value"),
+      caption = "Moran's I") %>% 
+  kable_styling(full_width = F)
+
+ggplot(boulder.test, aes(lagPriceError, price.Error)) +
+  geom_point(size = 0.75, colour = "black") +
+  stat_smooth(data=boulder.test, aes(lagPriceError, price.Error),
+              method = "lm", se = FALSE, size = 1, colour="#FA7800") +
+  labs(title="Lag error of price as a function of error of price") +
+  plotTheme()
+
+#全部预测值的图
+boulder <-
+  boulder %>%
+  mutate(logprice.Predict = predict(regboulder, boulder),
+         price.Predict=exp(logprice.Predict))
+
+ggplot() +
+  geom_sf(data = tracts19, fill = "grey80") +
+  geom_sf(data = boulder, aes(colour = q5(price.Predict)), show.legend = "point", size = .75) +
+  scale_colour_manual(values = palette5,
+                      labels = qBr(boulder, "price.Predict"),
+                      name = "Quintile\nBreaks") +
+  labs(title = "Predicted sale price for all data") +
+  mapTheme()
+
+#MAPE by neighborhood的图
+
+boulder.test.neighbor <- 
+  boulder.test %>% 
+  group_by(NAME) %>% 
+  summarize(price = mean(price),
+            MAPE = mean(price.APE)) %>%
+  st_set_geometry(NULL) %>%
+  left_join(tracts19) %>%
+  st_sf()
+
+ggplot() +
+  geom_sf(data = tracts19, fill = "grey80") +
+  geom_sf(data = boulder.test.neighbor, aes(fill = q5(MAPE)), size = 1) +
+  scale_fill_manual(values = palette5,
+                    labels = qBr(boulder.test.neighbor, "MAPE", rnd = FALSE),
+                    name = "Quintile\nBreaks") +
+  labs(title = "MAPE by Neighborhood for Test Set") +
+  mapTheme()
+
+#MAPE by neighborhood 和mean price by neighborhood的散点图
+ggplot(boulder.test.neighbor, aes(MAPE, price)) +
+  geom_point(size = 2, colour = "black") +
+  stat_smooth(data=boulder.test.neighbor, aes(MAPE, price),
+              method = "lm", se = FALSE, size = 1, colour="#FA7800") +
+  labs(title="MAPE by neighborhood as a function of mean price by neighborhood") +
+  plotTheme()
+
+#imcome分为High income 和low income 来检测模型的generalizability
+tracts19income <- 
+  get_acs(geography = "tract", variables = c("B06011_001E"), 
+          year=2019, state=08, county=013, geometry=T, output="wide") %>%
+  st_transform('ESRI:102254') %>%
+  rename(Median_Income = B06011_001E) %>%
+  mutate(incomeContext = ifelse(Median_Income > 40000, "High Income", "Low Income"))
+
+ggplot() + 
+  geom_sf(data = tracts19income, aes(fill = incomeContext)) +
+  scale_fill_manual(values = c("#ef8a62", "#67a9cf"), name="Income Context") +
+  labs(title = "Income Context") +
+  mapTheme() + 
+  theme(legend.position="bottom") 
+
+boulder.test.income <-
+  st_join(boulder.test, tracts19income) %>% 
+    group_by(incomeContext) %>%
+    summarize(MAE = mean(price.AbsError),
+              MAPE = mean(price.APE)) %>%
+    st_drop_geometry()
+
+kable(boulder.test.income, caption = "Errors for test set sale price predictions by income contexts") %>%
+  kable_styling("striped", full_width = F, position = "left") %>%
+  row_spec(1, color = "black", background = "#ef8a62") %>%
+  row_spec(2, color = "black", background = "#67a9cf")
 
 #模型预测
 
@@ -506,4 +676,6 @@ topredictoutput<-
   dplyr::select(MUSA_ID,price)%>%
   st_drop_geometry()
 
-write.csv(topredictoutput, file="price.csv", row.names = FALSE)
+write.csv(topredictoutput, file="Moran's eye.csv", row.names = FALSE)
+
+
